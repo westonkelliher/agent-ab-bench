@@ -1,0 +1,1 @@
+{"id": "log-analyzer", "bucket": "long", "description": "Extend a small multi-file log analyzer: fix a parsing bug and add a --since filter."}

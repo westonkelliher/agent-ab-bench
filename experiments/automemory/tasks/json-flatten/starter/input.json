@@ -1,0 +1,16 @@
+{
+  "name": "widget",
+  "meta": {
+    "version": 3,
+    "tags": ["red", "blue", "green"],
+    "author": {
+      "name": "Jane",
+      "email": "jane@example.com"
+    }
+  },
+  "active": true,
+  "notes": null,
+  "empty_obj": {},
+  "empty_arr": [],
+  "matrix": [[1, 2], [3, 4]]
+}

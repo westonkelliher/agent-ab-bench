@@ -1,0 +1,1 @@
+{"id": "rust-rle", "bucket": "long", "description": "Implement run-length encoding/decoding functions in a Rust crate so cargo test passes."}

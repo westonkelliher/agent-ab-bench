@@ -1,0 +1,7 @@
+2024-06-01T09:00:00 INFO boot sequence initiated
+2024-06-01T09:15:00 DEBUG cache warmed
+2024-06-01T11:30:00 WARN memory usage high
+2024-06-01T12:00:00 INFO user logged in
+2024-06-01T12:30:00 ERROR database timeout
+2024-06-01T13:00:00 INFO user logged out
+2024-06-01T14:00:00 DEBUG gc completed

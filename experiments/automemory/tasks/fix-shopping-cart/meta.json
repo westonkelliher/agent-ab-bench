@@ -1,0 +1,1 @@
+{"id": "fix-shopping-cart", "bucket": "medium", "description": "Debug a shopping cart module so its pytest suite passes."}

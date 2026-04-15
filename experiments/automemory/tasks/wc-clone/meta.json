@@ -1,0 +1,1 @@
+{"id": "wc-clone", "bucket": "medium", "description": "Write a bash script mywc.sh that mimics a subset of wc (-l, -w, -c flags)."}

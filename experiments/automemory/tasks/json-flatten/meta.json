@@ -1,0 +1,1 @@
+{"id": "json-flatten", "bucket": "medium", "description": "Write a Python script that flattens a nested JSON file into dot-notation key/value pairs."}
