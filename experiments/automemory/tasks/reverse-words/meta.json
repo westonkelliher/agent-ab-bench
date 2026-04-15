@@ -1,0 +1,1 @@
+{"id": "reverse-words", "bucket": "small", "description": "Write a bash script that reverses the word order of each line on stdin."}

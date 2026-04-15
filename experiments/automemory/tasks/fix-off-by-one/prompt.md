@@ -1,0 +1,1 @@
+The file `sum_range.py` in the current directory contains a function `sum_range(a, b)` that is supposed to return the sum of all integers from `a` to `b` **inclusive**. It currently has an off-by-one bug. Fix it. Do not rename the function or change its signature. Keep the file as a runnable Python module.

@@ -1,0 +1,1 @@
+{"id": "csv-to-json", "bucket": "small", "description": "Write a bash/python script that converts input.csv to output.json."}

@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+results/
+workdirs/
+experiments/*/results/
+experiments/*/workdirs/
+responses/
+.DS_Store
