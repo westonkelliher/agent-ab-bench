@@ -1,28 +1,31 @@
 #!/usr/bin/env python3
 """Render benchmark results as a markdown report.
 
-Usage:
-  python3 report.py [results_dir] [--out report.md] [--title TITLE] \
-      --a on="autoMemoryEnabled: true (default)" \
-      --b off="autoMemoryEnabled: false (ablated)"
+Supports two dimensions: conditions (A, B, ...) and prefixes.
 
-  # or pipe to eyeball-md:
-  python3 report.py --a ... --b ... | eyeball-md my-report
+Usage:
+  python3 report.py [results_dir] [--out report.md] [--title TITLE] \\
+      --cond on="autoMemoryEnabled: true (default)" \\
+      --cond off="autoMemoryEnabled: false (ablated)" \\
+      --prefix clean="no prior context" \\
+      --prefix bloated="~12k chars of unrelated prior conversation"
 """
 import argparse, glob, json, sys
 from pathlib import Path
 
 ROOT = Path(__file__).parent
+LETTERS = [chr(ord("A") + i) for i in range(26)]
 
 def load(results_dir):
     rows = []
     for f in sorted(glob.glob(str(results_dir / "*__*.json"))):
         r = json.loads(Path(f).read_text())
-        cc = r.get("cc_result", {})
-        u = cc.get("usage", {}) if isinstance(cc, dict) else {}
+        cc = r.get("cc_result", {}) or {}
+        u = (cc.get("usage") or {}) if isinstance(cc, dict) else {}
         rows.append({
             "task": r["task_id"],
             "cond": r["condition"],
+            "prefix": r.get("prefix", "none"),
             "seed": r.get("seed", 0),
             "model": r.get("model", "?"),
             "pass": r["passed"],
@@ -35,118 +38,176 @@ def load(results_dir):
         })
     return rows
 
-def fmt_int(n): return f"{n:,}" if n else "0"
 def fmt_money(x): return f"${x:.4f}"
+def fmt_int(n): return f"{n:,}" if n else "0"
+def avg_of(rs, k):
+    vs = [r[k] or 0 for r in rs]
+    return sum(vs) / len(vs) if vs else 0
+def pct(a, b):
+    return f"{100*(b-a)/a:+.1f}%" if a else "n/a"
 
-LETTERS = [chr(ord("A") + i) for i in range(26)]
+def cell(rows, cond, prefix):
+    return [r for r in rows if r["cond"] == cond and r["prefix"] == prefix]
 
-def render(rows, title, ab_map):
-    """ab_map: ordered dict {"A": (cond, desc), "B": (cond, desc), ...}"""
+def summarize(rs):
+    if not rs:
+        return None
+    n = len(rs)
+    p = sum(1 for r in rs if r["pass"])
+    return {
+        "n": n, "pass": p, "pass_rate": p / n,
+        "turns": avg_of(rs, "turns"), "out": avg_of(rs, "out_tok"),
+        "cache_r": avg_of(rs, "cache_r"), "cost": avg_of(rs, "cost"),
+        "time": avg_of(rs, "time"),
+    }
+
+def render(rows, title, cond_map, prefix_map):
     if not rows:
         return "# (no results)\n"
-    ab_order = [k for k in ab_map if ab_map[k][0]]
-
+    cond_order = [c for c in cond_map]
+    pref_order = [p for p in prefix_map] or sorted({r["prefix"] for r in rows})
     tasks = sorted({r["task"] for r in rows})
     n_seeds = len({r["seed"] for r in rows})
     model = sorted({r.get("model", "?") for r in rows})
     model_str = ", ".join(m for m in model if m)
-    model_note = (f"{len(rows)} runs · {len(tasks)} tasks × {len(ab_order)} conditions × "
-                  f"{n_seeds} seed(s) · model={model_str}")
 
-    out = [f"# {title}", "", f"**{model_note}**", "", "## Conditions", ""]
-    for letter in ab_order:
-        cond, desc = ab_map[letter]
+    out = [f"# {title}", "",
+           f"**{len(rows)} runs** · {len(tasks)} tasks × {len(cond_order)} conditions × "
+           f"{len(pref_order)} prefixes × {n_seeds} seed(s) · model={model_str}", ""]
+
+    out += ["## Conditions", ""]
+    for i, c in enumerate(cond_order):
+        letter = LETTERS[i]
+        desc = cond_map[c]
         suffix = f" — {desc}" if desc else ""
-        out.append(f"- **{letter}** = `{cond}`{suffix}")
+        out.append(f"- **{letter}** = `{c}`{suffix}")
     out.append("")
 
-    # aggregate
-    out += ["## Aggregate", "",
-            "| | pass rate | avg turns | avg out tok | avg cache read | avg cost | avg time |",
+    if pref_order:
+        out += ["## Prefixes", ""]
+        for p in pref_order:
+            desc = prefix_map.get(p, "")
+            suffix = f" — {desc}" if desc else ""
+            out.append(f"- `{p}`{suffix}")
+        out.append("")
+
+    # Cell grid: one row per (condition, prefix)
+    out += ["## Cells (condition × prefix)", "",
+            "| cond | prefix | pass | avg turns | avg out tok | avg cost | avg time |",
             "|---|---|---|---|---|---|---|"]
-    agg = {}
-    for letter in ab_order:
-        cond = ab_map[letter][0]
-        rs = [r for r in rows if r["cond"] == cond]
-        if not rs:
-            continue
-        n = len(rs)
-        passed = sum(1 for r in rs if r["pass"])
-        avg = lambda k: sum(r[k] or 0 for r in rs) / n
-        agg[letter] = {"pass": passed, "n": n, "turns": avg("turns"),
-                       "out": avg("out_tok"), "cache": avg("cache_r"),
-                       "cost": avg("cost"), "time": avg("time")}
-        out.append(f"| **{letter}** | {passed}/{n} ({100*passed/n:.0f}%) | "
-                   f"{agg[letter]['turns']:.1f} | {agg[letter]['out']:.0f} | "
-                   f"{fmt_int(int(agg[letter]['cache']))} | {fmt_money(agg[letter]['cost'])} | "
-                   f"{agg[letter]['time']:.1f}s |")
+    cells = {}
+    for i, c in enumerate(cond_order):
+        for p in pref_order:
+            rs = cell(rows, c, p)
+            s = summarize(rs)
+            if not s:
+                continue
+            cells[(c, p)] = s
+            out.append(f"| **{LETTERS[i]}** `{c}` | `{p}` | {s['pass']}/{s['n']} "
+                       f"({100*s['pass_rate']:.0f}%) | {s['turns']:.1f} | {s['out']:.0f} "
+                       f"| {fmt_money(s['cost'])} | {s['time']:.1f}s |")
 
-    # deltas vs A (baseline) for every other condition
-    if "A" in agg and len(ab_order) >= 2:
-        out += ["", "## Deltas vs A", ""]
-        def pct(letter, k):
-            base = agg["A"][k]
-            d = agg[letter][k] - base
-            return f"{100*d/base:+.1f}%" if base else "n/a"
-        header = "| | pass | cost Δ | turns Δ | out tok Δ | time Δ |"
-        sep = "|---|---|---|---|---|---|"
-        out += [header, sep]
-        for letter in ab_order:
-            if letter == "A":
-                out.append(f"| **A** | {agg['A']['pass']}/{agg['A']['n']} | — | — | — | — |")
-            else:
-                out.append(f"| **{letter}** | {agg[letter]['pass']}/{agg[letter]['n']} | "
-                           f"{pct(letter, 'cost')} | {pct(letter, 'turns')} | "
-                           f"{pct(letter, 'out')} | {pct(letter, 'time')} |")
+    # Interaction: within each prefix, compare B vs A
+    if len(cond_order) >= 2 and len(pref_order) >= 1:
+        a_cond = cond_order[0]
+        out += ["", f"## Within-prefix deltas (relative to A = `{a_cond}`)", ""]
+        header_cols = ["prefix"] + [f"{LETTERS[i]} cost Δ" for i in range(1, len(cond_order))] \
+            + [f"{LETTERS[i]} turns Δ" for i in range(1, len(cond_order))] \
+            + [f"{LETTERS[i]} out tok Δ" for i in range(1, len(cond_order))] \
+            + [f"{LETTERS[i]} pass Δ" for i in range(1, len(cond_order))]
+        out.append("| " + " | ".join(header_cols) + " |")
+        out.append("|" + "---|" * len(header_cols))
+        for p in pref_order:
+            base = cells.get((a_cond, p))
+            if not base: continue
+            row = [f"`{p}`"]
+            # Cost deltas
+            for c in cond_order[1:]:
+                other = cells.get((c, p))
+                row.append(pct(base["cost"], other["cost"]) if other else "—")
+            for c in cond_order[1:]:
+                other = cells.get((c, p))
+                row.append(pct(base["turns"], other["turns"]) if other else "—")
+            for c in cond_order[1:]:
+                other = cells.get((c, p))
+                row.append(pct(base["out"], other["out"]) if other else "—")
+            for c in cond_order[1:]:
+                other = cells.get((c, p))
+                row.append(f"{(other['pass']-base['pass']):+d}" if other else "—")
+            out.append("| " + " | ".join(row) + " |")
 
-    # per-task paired
+    # Main effect of prefix (within A): is bloat alone doing anything?
+    if len(pref_order) >= 2 and len(cond_order) >= 1:
+        a_cond = cond_order[0]
+        base_prefix = pref_order[0]
+        out += ["", f"## Prefix main effect (within A = `{a_cond}`, relative to `{base_prefix}`)", ""]
+        base = cells.get((a_cond, base_prefix))
+        if base:
+            out += ["| prefix | cost Δ | turns Δ | out tok Δ | pass Δ |",
+                    "|---|---|---|---|---|"]
+            for p in pref_order:
+                if p == base_prefix: continue
+                other = cells.get((a_cond, p))
+                if not other: continue
+                out.append(f"| `{p}` | {pct(base['cost'], other['cost'])} | "
+                           f"{pct(base['turns'], other['turns'])} | "
+                           f"{pct(base['out'], other['out'])} | "
+                           f"{other['pass']-base['pass']:+d} |")
+
+    # Per task
     out += ["", "## Per task", "",
-            "| task | | pass | turns | out tok | cache read | cost | time |",
+            "| task | cond | prefix | pass | turns | out tok | cost | time |",
             "|---|---|---|---|---|---|---|---|"]
     for t in tasks:
-        for letter in ab_order:
-            cond = ab_map[letter][0]
-            rs = [r for r in rows if r["task"] == t and r["cond"] == cond]
-            if not rs: continue
-            n = len(rs)
-            p = sum(r["pass"] for r in rs)
-            avg = lambda k: sum(r[k] or 0 for r in rs) / n
-            out.append(f"| {t} | **{letter}** | {p}/{n} | {avg('turns'):.1f} | "
-                       f"{avg('out_tok'):.0f} | {fmt_int(int(avg('cache_r')))} | "
-                       f"{fmt_money(avg('cost'))} | {avg('time'):.1f}s |")
+        for i, c in enumerate(cond_order):
+            for p in pref_order:
+                rs = [r for r in rows if r["task"] == t and r["cond"] == c and r["prefix"] == p]
+                if not rs: continue
+                n = len(rs)
+                pp = sum(r["pass"] for r in rs)
+                out.append(f"| {t} | **{LETTERS[i]}** `{c}` | `{p}` | {pp}/{n} | "
+                           f"{avg_of(rs, 'turns'):.1f} | {avg_of(rs, 'out_tok'):.0f} | "
+                           f"{fmt_money(avg_of(rs, 'cost'))} | {avg_of(rs, 'time'):.1f}s |")
 
     return "\n".join(out) + "\n"
 
-def parse_ab(spec):
-    """Parse 'cond=description' or just 'cond' into (cond, description)."""
-    if spec is None:
-        return (None, None)
+def parse_kv(spec):
     if "=" in spec:
         k, v = spec.split("=", 1)
-        return (k.strip(), v.strip())
-    return (spec.strip(), "")
+        return k.strip(), v.strip()
+    return spec.strip(), ""
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("results_dir", nargs="?", default=str(ROOT / "results"))
     ap.add_argument("--out", help="write to file instead of stdout")
     ap.add_argument("--title", default="Benchmark")
-    ap.add_argument("--cond", action="append", default=[], metavar="COND[=DESC]",
-                    help="register a condition; repeatable. Letters A, B, C, ... are "
-                         "assigned in the order given. Example: --cond on=default --cond off=ablated")
+    ap.add_argument("--cond", action="append", default=[], metavar="NAME[=DESC]",
+                    help="declare a condition in order; letters A, B, C assigned by order given.")
+    ap.add_argument("--prefix", action="append", default=[], metavar="NAME[=DESC]",
+                    help="declare a prefix in order.")
     args = ap.parse_args()
 
     rows = load(Path(args.results_dir))
-    ab_map = {}
-    if args.cond:
-        for i, spec in enumerate(args.cond):
-            ab_map[LETTERS[i]] = parse_ab(spec)
-    else:
-        # fall back: auto-assign every condition seen in results, in sorted order
-        for i, c in enumerate(sorted({r["cond"] for r in rows})):
-            ab_map[LETTERS[i]] = (c, "")
 
-    md = render(rows, args.title, ab_map)
+    # Ordered dicts preserving CLI order
+    cond_map = {}
+    for spec in args.cond:
+        k, v = parse_kv(spec)
+        cond_map[k] = v
+    if not cond_map:
+        for c in sorted({r["cond"] for r in rows}):
+            cond_map[c] = ""
+
+    prefix_map = {}
+    for spec in args.prefix:
+        k, v = parse_kv(spec)
+        prefix_map[k] = v
+    if not prefix_map:
+        for p in sorted({r["prefix"] for r in rows}):
+            prefix_map[p] = ""
+
+    md = render(rows, args.title, cond_map, prefix_map)
     if args.out:
         Path(args.out).write_text(md)
         print(f"wrote {args.out}", file=sys.stderr)

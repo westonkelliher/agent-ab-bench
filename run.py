@@ -50,13 +50,13 @@ def load_tasks(tasks_dir: Path, only=None):
         })
     return tasks
 
-def result_path(results_dir, task_id, condition, seed):
-    return results_dir / f"{task_id}__{condition}__s{seed}.json"
+def result_path(results_dir, task_id, condition, prefix, seed):
+    return results_dir / f"{task_id}__{condition}__{prefix}__s{seed}.json"
 
-def run_one(task, condition, settings_path, model, seed,
-            budget_usd, max_total_usd, results_dir, workdirs_root):
+def run_one(task, condition, settings_path, prefix_name, prefix_text,
+            model, seed, budget_usd, max_total_usd, results_dir, workdirs_root):
     global _total_spend
-    out_path = result_path(results_dir, task["id"], condition, seed)
+    out_path = result_path(results_dir, task["id"], condition, prefix_name, seed)
     if out_path.exists():
         return {"skipped": True, "run_id": out_path.stem}
 
@@ -65,7 +65,8 @@ def run_one(task, condition, settings_path, model, seed,
             return {"aborted": True, "reason": "max_total_usd reached",
                     "run_id": out_path.stem}
 
-    run_id = f"{task['id']}__{condition}__s{seed}__{uuid.uuid4().hex[:6]}"
+    run_id = f"{task['id']}__{condition}__{prefix_name}__s{seed}__{uuid.uuid4().hex[:6]}"
+    full_prompt = (prefix_text + task["prompt"]) if prefix_text else task["prompt"]
     workdir = workdirs_root / run_id
     workdir.mkdir(parents=True, exist_ok=True)
     if task["starter"]:
@@ -77,7 +78,7 @@ def run_one(task, condition, settings_path, model, seed,
                 shutil.copy2(item, dst)
 
     cmd = [
-        "claude", "-p", task["prompt"],
+        "claude", "-p",
         "--model", model,
         "--setting-sources", "",
         "--settings", str(settings_path),
@@ -89,8 +90,8 @@ def run_one(task, condition, settings_path, model, seed,
     ]
     t0 = time.time()
     try:
-        proc = subprocess.run(cmd, cwd=workdir, capture_output=True,
-                              text=True, timeout=1800)
+        proc = subprocess.run(cmd, cwd=workdir, input=full_prompt,
+                              capture_output=True, text=True, timeout=1800)
         stdout, stderr, rc = proc.stdout, proc.stderr, proc.returncode
     except subprocess.TimeoutExpired as e:
         stdout = (e.stdout.decode() if isinstance(e.stdout, bytes) else e.stdout) or ""
@@ -113,6 +114,8 @@ def run_one(task, condition, settings_path, model, seed,
         "task_id": task["id"],
         "bucket": task["bucket"],
         "condition": condition,
+        "prefix": prefix_name,
+        "prefix_chars": len(prefix_text or ""),
         "settings_file": str(settings_path),
         "seed": seed,
         "model": model,
@@ -150,6 +153,16 @@ def parse_condition(spec):
         raise SystemExit(f"--condition {name}: settings file not found: {p}")
     return name.strip(), p
 
+def parse_prefix(spec):
+    """Parse 'name=path/to/prefix.txt' into (name, text)."""
+    if "=" not in spec:
+        raise SystemExit(f"--prefix must be NAME=PATH, got: {spec!r}")
+    name, path = spec.split("=", 1)
+    p = Path(path).expanduser().resolve()
+    if not p.exists():
+        raise SystemExit(f"--prefix {name}: file not found: {p}")
+    return name.strip(), p.read_text()
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--tasks", required=True,
@@ -159,6 +172,11 @@ def main():
                     help="condition: a label and a Claude Code settings JSON file. "
                          "Repeat for each condition, e.g. --condition on=on.json "
                          "--condition off=off.json")
+    ap.add_argument("--prefix", action="append", default=[],
+                    metavar="NAME=PATH",
+                    help="optional text file prepended to every task prompt. "
+                         "Repeatable — each prefix is a separate dimension "
+                         "crossed with conditions and tasks.")
     ap.add_argument("--results-dir", default=str(ROOT / "results"),
                     help="where per-run result JSONs are written")
     ap.add_argument("--workdirs-dir", default=str(ROOT / "workdirs"),
@@ -179,6 +197,11 @@ def main():
     if len(set(names)) != len(names):
         raise SystemExit(f"duplicate condition names: {names}")
 
+    prefixes = [parse_prefix(p) for p in args.prefix] if args.prefix else [("none", "")]
+    pnames = [p[0] for p in prefixes]
+    if len(set(pnames)) != len(pnames):
+        raise SystemExit(f"duplicate prefix names: {pnames}")
+
     only = set(args.only.split(",")) if args.only else None
     tasks = load_tasks(Path(args.tasks).resolve(), only=only)
     if not tasks:
@@ -193,19 +216,22 @@ def main():
     for seed in range(args.seeds):
         for task in tasks:
             for (cname, cpath) in conditions:
-                jobs.append((task, cname, cpath, seed))
+                for (pname, ptext) in prefixes:
+                    jobs.append((task, cname, cpath, pname, ptext, seed))
 
     print(f"Running {len(jobs)} jobs: {len(tasks)} tasks × "
-          f"{len(conditions)} conditions × {args.seeds} seeds · jobs={args.jobs}")
+          f"{len(conditions)} conditions × {len(prefixes)} prefixes × "
+          f"{args.seeds} seeds · jobs={args.jobs}")
     print(f"Conditions: {', '.join(f'{n} → {p.name}' for n, p in conditions)}")
+    print(f"Prefixes: {', '.join(f'{n} ({len(t)}ch)' for n, t in prefixes)}")
     print(f"Results → {results_dir}")
 
     records = []
     with ThreadPoolExecutor(max_workers=args.jobs) as ex:
-        futs = {ex.submit(run_one, t, cn, cp, args.model, s,
+        futs = {ex.submit(run_one, t, cn, cp, pn, pt, args.model, s,
                           args.budget_per_run, args.max_total_usd,
-                          results_dir, workdirs_root): (t["id"], cn, s)
-                for (t, cn, cp, s) in jobs}
+                          results_dir, workdirs_root): (t["id"], cn, pn, s)
+                for (t, cn, cp, pn, pt, s) in jobs}
         for fut in as_completed(futs):
             rec = fut.result()
             if rec.get("skipped"):
