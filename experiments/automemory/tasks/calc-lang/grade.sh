@@ -51,8 +51,9 @@ cat > p4.calc <<'EOF'
 PUSH  1
    PUSH 2
 ADD
-   PRINT
+PUSH 99
 POP
+   PRINT
 EOF
 out=$(python3 calc.py p4.calc 2>&1)
 [ "$out" = "3" ] || { echo "p4: $out"; exit 1; }

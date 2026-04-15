@@ -2,8 +2,9 @@
 set -e
 test -f mywc.sh
 
-# no real wc allowed
-if grep -qE '(^|[^a-zA-Z_])wc([^a-zA-Z_]|$)' mywc.sh; then
+# no real wc allowed (strip comments before checking so harmless mentions in
+# comments like "# using awk (no wc)" don't trip us up)
+if sed 's/#.*$//' mywc.sh | grep -qE '(^|[^a-zA-Z_])wc([^a-zA-Z_]|$)'; then
     echo "mywc.sh must not invoke wc"; exit 1
 fi
 
